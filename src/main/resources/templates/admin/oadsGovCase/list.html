@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="en" xmlns:th="http://www.thymeleaf.org" xmlns:sec="http://www.pollix.at/thymeleaf/shiro">
+<head>
+    <th:block th:include="include :: header('监管办件台账')"/>
+</head>
+<body class="pear-container">
+<div class="layui-card">
+    <div class="layui-card-body">
+        <form class="layui-form" action="">
+            <div class="layui-form-item">
+                <label class="layui-form-label">办件单号</label>
+                <div class="layui-input-inline">
+                    <input type="text" name="bizNo" placeholder="办件单号" class="layui-input">
+                </div>
+                <label class="layui-form-label">点位码</label>
+                <div class="layui-input-inline">
+                    <input type="text" name="spotNo" placeholder="在册点位编码" class="layui-input">
+                </div>
+                <label class="layui-form-label">路段代号</label>
+                <div class="layui-input-inline">
+                    <input type="text" name="areaNo" placeholder="所属路段代号" class="layui-input">
+                </div>
+                <label class="layui-form-label">情形</label>
+                <div class="layui-input-inline">
+                    <select name="status">
+                        <option value="">全部</option>
+                        <option value="1">在办（尚未走完）</option>
+                        <option value="2">已封存（验收走完）</option>
+                        <option value="3">申报后撤回报备</option>
+                        <option value="4">路段划归邻段</option>
+                        <option value="5">作废</option>
+                    </select>
+                </div>
+                <button class="pear-btn pear-btn-md pear-btn-primary" lay-submit lay-filter="case-query">
+                    <i class="layui-icon layui-icon-search"></i> 查询
+                </button>
+                <button type="reset" class="pear-btn pear-btn-md">
+                    <i class="layui-icon layui-icon-refresh"></i> 重置
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
+<div class="layui-card">
+    <div class="layui-card-body">
+        <blockquote class="layui-elem-quote">
+            尚未走完：<span id="case-open" th:text="${openCount}">0</span> 件
+            （立一条加一、封存/收尾减一，数字取自后端一次查询，不用前端缓存）
+            <button class="pear-btn pear-btn-sm pear-btn-warming" id="case-reconcile-btn">
+                <i class="layui-icon layui-icon-auz"></i> 对账
+            </button>
+        </blockquote>
+    </div>
+</div>
+<div class="layui-card">
+    <div class="layui-card-body">
+        <table id="case-table" lay-filter="case-table"></table>
+    </div>
+</div>
+
+<script type="text/html" id="case-toolbar">
+    <button shiro:hasPermission="oads:oadsGovCase:create" class="pear-btn pear-btn-primary pear-btn-md" lay-event="report">
+        <i class="layui-icon layui-icon-add-1"></i> 报备
+    </button>
+    <button shiro:hasPermission="oads:oadsGovCase:create" class="pear-btn pear-btn-normal pear-btn-md" lay-event="establish">
+        <i class="fa fa-check-square-o"></i> 正式立件
+    </button>
+</script>
+
+<script type="text/html" id="case-bar">
+    <button shiro:hasPermission="oads:oadsGovCase:view" class="pear-btn pear-btn-primary pear-btn-sm" lay-event="detail" title="整件/留痕">
+        <i class="layui-icon layui-icon-form"></i>
+    </button>
+    {{# if (d.status == 1) { }}
+    <button shiro:hasPermission="oads:oadsGovCase:close" class="pear-btn pear-btn-warming pear-btn-sm" lay-event="withdraw" title="撤回报备">
+        <i class="fa fa-undo"></i>
+    </button>
+    <button shiro:hasPermission="oads:oadsGovCase:close" class="pear-btn pear-btn-warming pear-btn-sm" lay-event="reassign" title="划段收尾">
+        <i class="fa fa-exchange"></i>
+    </button>
+    {{# if (d.stepNo == 4) { }}
+    <button shiro:hasPermission="oads:oadsGovCase:void" class="pear-btn pear-btn-danger pear-btn-sm" lay-event="void" title="作废（仅验收步）">
+        <i class="fa fa-ban"></i>
+    </button>
+    {{# } }}
+    {{# } }}
+</script>
+
+<script type="text/html" id="case-status">
+    {{# if (d.status == 2) { }}
+    <span class="layui-badge layui-bg-green">已封存</span>
+    {{# }else if(d.status == 3){ }}
+    <span class="layui-badge">撤回报备</span>
+    {{# }else if(d.status == 4){ }}
+    <span class="layui-badge layui-bg-orange">划归邻段</span>
+    {{# }else if(d.status == 5){ }}
+    <span class="layui-badge">作废</span>
+    {{# }else { }}
+    <span class="layui-badge layui-bg-blue">在办</span>
+    {{# } }}
+</script>
+
+<th:block th:include="include :: footer"/>
+<script>
+    layui.use(['table', 'form', 'jquery', 'layer'], function () {
+        let table = layui.table;
+        let form = layui.form;
+        let $ = layui.jquery;
+        let layer = layui.layer;
+        let MODULE_PATH = rootPath + "/oadsGovCase/";
+        let stepNames = {1: '申报', 2: '核准', 3: '设置', 4: '验收'};
+
+        table.render({
+            elem: '#case-table',
+            url: MODULE_PATH + 'list',
+            page: true,
+            method: 'get',
+            skin: 'line',
+            toolbar: '#case-toolbar',
+            defaultToolbar: ['refresh', 'filter', 'print', 'exports'],
+            cols: [[
+                {title: 'ID', field: 'id', align: 'center', width: 170},
+                {title: '办件单号', field: 'bizNo', align: 'left', width: 170},
+                {title: '点位码', field: 'spotNo', align: 'center'},
+                {title: '路段代号', field: 'areaNo', align: 'center'},
+                {title: '处数', field: 'qty', align: 'center', width: 70},
+                {title: '校核分值', field: 'checkScore', align: 'center', width: 90},
+                {title: '当前步', field: 'stepNo', align: 'center',
+                    templet: function (d) { return d.stepNo ? stepNames[d.stepNo] : '—'; }},
+                {title: '设置核收', field: 'setupAccept', align: 'center', width: 90,
+                    templet: function (d) { return d.setupAccept === 1 ? '已同意' : '未同意'; }},
+                {title: '见证', field: 'witnessCount', align: 'center', width: 70,
+                    templet: function (d) { return (d.witnessCount || 0) + '/2'; }},
+                {title: '复验凭证', field: 'recheckVoucher', align: 'center'},
+                {title: '情形', field: 'status', align: 'center', toolbar: '#case-status'},
+                {title: '立件时刻', field: 'createTime', align: 'center', width: 165},
+                {title: '操作', toolbar: '#case-bar', align: 'center', width: 150}
+            ]]
+        });
+
+        function refreshOpen() {
+            $.get(MODULE_PATH + 'openCount', function (r) {
+                if (r.code === 200) {
+                    $('#case-open').text(r.count);
+                }
+            });
+        }
+
+        function postAction(url, data, ok) {
+            $.ajax({url: url, type: 'post', data: data, success: function (result) {
+                if (result.code === 200) {
+                    layer.msg(result.msg, {icon: 1, time: 1400}, function () {
+                        layer.closeAll();
+                        table.reload('case-table');
+                        refreshOpen();
+                        if (ok) ok();
+                    });
+                } else {
+                    layer.msg(result.msg, {icon: 2});
+                }
+            }});
+        }
+
+        table.on('tool(case-table)', function (obj) {
+            let d = obj.data;
+            if (obj.event === 'detail') {
+                window.location.href = MODULE_PATH + 'detail/' + d.id;
+            } else if (obj.event === 'withdraw' || obj.event === 'reassign' || obj.event === 'void') {
+                let map = {withdraw: ['撤回报备', 'withdraw'], reassign: ['划段收尾（目录须已划归邻段）', 'reassignClose'],
+                    void: ['作废（只从验收发起）', 'void']};
+                layer.prompt({title: map[obj.event][0] + '—交代（可空）', formType: 2}, function (note) {
+                    postAction(MODULE_PATH + map[obj.event][1], {caseId: d.id, note: note});
+                });
+            }
+        });
+
+        table.on('toolbar(case-table)', function (obj) {
+            if (obj.event === 'report') {
+                layer.open({type: 1, title: '报备（四项输入缺一不可）', shade: 0.1, area: ['480px', '430px'],
+                    content: $('#case-report-panel')});
+            } else if (obj.event === 'establish') {
+                layer.open({type: 1, title: '正式立件（填报备登记ID）', shade: 0.1, area: ['420px', '220px'],
+                    content: $('#case-establish-panel')});
+            }
+        });
+
+        form.on('submit(case-query)', function (data) {
+            table.reload('case-table', {where: data.field, page: {curr: 1}});
+            return false;
+        });
+
+        form.on('submit(case-report-submit)', function (data) {
+            postAction(MODULE_PATH + 'report', data.field, function () {
+                if (data.field.reqNo) layer.msg('报备已收（同请求号再报认作同一件）', {icon: 1});
+            });
+            return false;
+        });
+
+        form.on('submit(case-establish-submit)', function (data) {
+            postAction(MODULE_PATH + 'establish', data.field);
+            return false;
+        });
+
+        $('#case-reconcile-btn').on('click', function () {
+            $.get(MODULE_PATH + 'reconcile', function (result) {
+                if (result.code === 200) {
+                    let c = result.data;
+                    let msg = '账面尚未走完 ' + c.openCount + ' 件，留痕重算 ' + c.recountedCount + ' 件。';
+                    if (c.balanced) {
+                        layer.msg(msg + '账账相符', {icon: 1});
+                    } else {
+                        layer.alert(msg + '\n对不上的办件：\n' + c.mismatches.join('\n'),
+                            {icon: 2, title: '账面对不上'});
+                    }
+                } else {
+                    layer.msg(result.msg, {icon: 2});
+                }
+            });
+        });
+    });
+</script>
+
+<form class="layui-form" id="case-report-panel" style="display:none;padding:20px;">
+    <div class="layui-form-item">
+        <label class="layui-form-label">点位编码</label>
+        <div class="layui-input-block">
+            <input type="text" name="spotNo" lay-verify="required" placeholder="跟着一处在册点位走" class="layui-input">
+        </div>
+    </div>
+    <div class="layui-form-item">
+        <label class="layui-form-label">路段代号</label>
+        <div class="layui-input-block">
+            <input type="text" name="areaNo" lay-verify="required" placeholder="所属路段代号" class="layui-input">
+        </div>
+    </div>
+    <div class="layui-form-item">
+        <label class="layui-form-label">处数</label>
+        <div class="layui-input-inline">
+            <input type="text" name="qtyText" lay-verify="required" placeholder="整数" class="layui-input">
+        </div>
+        <label class="layui-form-label">校核分值</label>
+        <div class="layui-input-inline">
+            <input type="text" name="checkScoreText" lay-verify="required" placeholder="0..100" class="layui-input">
+        </div>
+    </div>
+    <div class="layui-form-item">
+        <label class="layui-form-label">幂等请求号</label>
+        <div class="layui-input-block">
+            <input type="text" name="reqNo" placeholder="同一批并着报两回填同号（可空）" class="layui-input">
+        </div>
+    </div>
+    <div class="layui-form-item">
+        <div class="layui-input-block">
+            <button class="pear-btn pear-btn-primary" lay-submit lay-filter="case-report-submit">报备</button>
+        </div>
+    </div>
+</form>
+
+<form class="layui-form" id="case-establish-panel" style="display:none;padding:20px;">
+    <div class="layui-form-item">
+        <label class="layui-form-label">报备ID</label>
+        <div class="layui-input-block">
+            <input type="text" name="reportId" lay-verify="required" placeholder="报备登记主键（报备返回的 id）" class="layui-input">
+        </div>
+    </div>
+    <div class="layui-form-item">
+        <div class="layui-input-block">
+            <button class="pear-btn pear-btn-primary" lay-submit lay-filter="case-establish-submit">正式立起，落第一步申报</button>
+        </div>
+    </div>
+</form>
+</body>
+</html>

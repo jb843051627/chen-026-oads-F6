@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en" xmlns:th="http://www.thymeleaf.org" xmlns:sec="http://www.pollix.at/thymeleaf/shiro">
+<head>
+    <th:block th:include="include :: header('监管办件整件与留痕')"/>
+</head>
+<body class="pear-container">
+<div class="layui-card">
+    <div class="layui-card-body">
+        <button class="pear-btn pear-btn-md" onclick="history.back()">
+            <i class="layui-icon layui-icon-return"></i> 返回台账
+        </button>
+        <span id="case-tag" style="margin-left:16px;"></span>
+        <span id="case-next" style="margin-left:16px;"></span>
+    </div>
+</div>
+<div id="case-steps"></div>
+
+<div class="layui-card" id="case-action-card" style="display:none;">
+    <div class="layui-card-header">当前步落笔（步次由服务端按留痕点出，此表不填步次）</div>
+    <div class="layui-card-body">
+        <form class="layui-form" id="case-action-form">
+            <input type="hidden" name="caseId" th:value="${caseId}">
+            <input type="hidden" name="reqNo" id="case-req-no">
+            <div class="layui-form-item" id="case-opinion-row">
+                <label class="layui-form-label">本步意见</label>
+                <div class="layui-input-block">
+                    <textarea name="note" class="layui-textarea" placeholder="这一步这句批语原文留痕；同一步第二次送保留首次"></textarea>
+                </div>
+            </div>
+            <div class="layui-form-item" id="case-agree-row" style="display:none;">
+                <label class="layui-form-label">设置核收</label>
+                <div class="layui-input-inline">
+                    <select name="agree">
+                        <option value="1">记为同意（才可进验收）</option>
+                        <option value="2">未记同意</option>
+                    </select>
+                </div>
+            </div>
+            <div class="layui-form-item" id="case-witness-row" style="display:none;">
+                <label class="layui-form-label">见证岗代号</label>
+                <div class="layui-input-inline">
+                    <input type="text" name="witnessPost" placeholder="两名见证岗各提交一次" class="layui-input">
+                </div>
+            </div>
+            <div class="layui-form-item" id="case-voucher-row" style="display:none;">
+                <label class="layui-form-label">复验凭证编码</label>
+                <div class="layui-input-inline">
+                    <input type="text" name="recheckVoucher" placeholder="回写本行；与两见证齐才封存" class="layui-input">
+                </div>
+            </div>
+            <div class="layui-form-item">
+                <div class="layui-input-block">
+                    <button shiro:hasPermission="oads:oadsGovCase:opinion"
+                            class="pear-btn pear-btn-primary pear-btn-md" lay-submit lay-filter="case-opinion-submit">
+                        送这一笔
+                    </button>
+                    <button shiro:hasPermission="oads:oadsGovCase:flow" type="button"
+                            class="pear-btn pear-btn-normal pear-btn-md" id="case-advance-btn">
+                        紧邻推进
+                    </button>
+                    <button shiro:hasPermission="oads:oadsGovCase:flow" type="button"
+                            class="pear-btn pear-btn-warming pear-btn-md" id="case-return-btn">
+                        后退一步
+                    </button>
+                </div>
+            </div>
+        </form>
+    </div>
+</div>
+
+<div class="layui-card">
+    <div class="layui-card-header">追溯时序（每步那句意见＋提交时刻，按时序压在本件后面；后退老轮也在）</div>
+    <div class="layui-card-body">
+        <table id="case-timeline-table"></table>
+    </div>
+</div>
+
+<th:block th:include="include :: footer"/>
+<script>
+    layui.use(['table', 'form', 'jquery', 'layer'], function () {
+        let table = layui.table;
+        let form = layui.form;
+        let $ = layui.jquery;
+        let layer = layui.layer;
+        let MODULE_PATH = rootPath + "/oadsGovCase/";
+        let caseId = $('input[name="caseId"]').val();
+        let stepNames = {1: '申报', 2: '核准', 3: '设置', 4: '验收'};
+        let actionNames = {REACH: '走到', OPINION: '意见', WITNESS: '见证', RETURN: '后退', SEAL: '封存', CLOSE: '收尾'};
+
+        function loadDetail() {
+            $.get(MODULE_PATH + 'detailData/' + caseId, function (result) {
+                if (result.code !== 200) {
+                    layer.msg(result.msg, {icon: 2});
+                    return;
+                }
+                render(result.data);
+            });
+        }
+
+        function render(view) {
+            let c = view.govCase;
+            let terminal = view.sealed || view.closed;
+            let tag = view.sealed
+                ? '<span class="layui-badge layui-bg-green">已封存：可查不可写，不接新增/更正/抽回</span>'
+                : (view.closed ? '<span class="layui-badge layui-bg-orange">已收尾：' + statusText(c.status) + '</span>'
+                    : '<span class="layui-badge layui-bg-blue">在办·停在' + stepNames[c.stepNo] + '</span>');
+            $('#case-tag').html(tag);
+            $('#case-action-card').toggle(!terminal);
+
+            let html = '';
+            view.steps.forEach(function (s) {
+                let head = '<div class="layui-card"><div class="layui-card-header">'
+                    + (s.current ? '<span class="layui-badge layui-bg-blue">当前步</span> ' : '')
+                    + (s.reached ? '<span class="layui-badge layui-bg-green">已走到</span> ' : '')
+                    + '第' + s.stepNo + '步 ' + s.stepName + '（第' + (s.roundNo || 0) + '轮，本轮在档'
+                    + s.landedCount + '笔）<br><small style="color:#888;">进入准入：' + s.entryRule + '</small>'
+                    + '</div><div class="layui-card-body"><table class="layui-table">'
+                    + '<thead><tr><th>笔序</th><th>动作</th><th>见证岗</th><th>判断</th><th>落账时刻</th><th>批语/交代</th></tr></thead><tbody>';
+                let rows = '';
+                s.logs.forEach(function (g) {
+                    rows += '<tr><td>' + g.seqNo + '</td><td>' + (actionNames[g.action] || g.action) + '</td>'
+                        + '<td>' + (g.witnessPost || '') + '</td>'
+                        + '<td>' + (g.agree == null ? '' : (g.agree === 1 ? '同意' : '未同意')) + '</td>'
+                        + '<td>' + (g.actedAt || '') + '</td><td>' + (g.note || '') + '</td></tr>';
+                });
+                html += head + (rows || '<tr><td colspan="6">本步本轮尚无在档落笔</td></tr>') + '</tbody></table></div></div>';
+            });
+            $('#case-steps').html(html);
+
+            // 动作区按当前步切字段
+            let step = c.stepNo;
+            $('#case-agree-row,#case-witness-row,#case-voucher-row').hide();
+            if (step === 3) {
+                $('#case-agree-row').show();
+            } else if (step === 4) {
+                $('#case-witness-row,#case-voucher-row').show();
+            }
+            let nextStep = step < 4 ? step + 1 : null;
+            $('#case-next').text(nextStep ? '紧邻下一步：' + stepNames[nextStep] + '（' + view.steps[nextStep - 1].entryRule + '）'
+                : '已到验收，两见证＋凭证齐即封存');
+
+            table.render({
+                elem: '#case-timeline-table',
+                data: view.timeline,
+                skin: 'line', page: false,
+                cols: [[
+                    {title: '笔序', field: 'seqNo', width: 70, align: 'center'},
+                    {title: '步', field: 'stepNo', width: 70, align: 'center', templet: function (d) { return stepNames[d.stepNo]; }},
+                    {title: '轮', field: 'roundNo', width: 60, align: 'center'},
+                    {title: '动作', field: 'action', width: 80, align: 'center', templet: function (d) { return actionNames[d.action] || d.action; }},
+                    {title: '在档', field: 'active', width: 80, align: 'center', templet: function (d) { return d.active === 1 ? '本轮' : '已随后退留尾部'; }},
+                    {title: '见证岗', field: 'witnessPost', width: 110, align: 'center'},
+                    {title: '经办', field: 'operator', width: 110, align: 'center'},
+                    {title: '落账时刻', field: 'actedAt', width: 170, align: 'center'},
+                    {title: '批语/交代', field: 'note'}
+                ]]
+            });
+        }
+
+        function statusText(s) {
+            return {3: '申报后撤回报备', 4: '路段划归邻段', 5: '作废'}[s] || '已收尾';
+        }
+
+        function postAction(url, data, ok) {
+            $.ajax({url: url, type: 'post', data: data, success: function (result) {
+                if (result.code === 200) {
+                    layer.msg(result.msg, {icon: 1, time: 1500}, function () {
+                        layer.closeAll();
+                        loadDetail();
+                        if (ok) ok();
+                    });
+                } else {
+                    layer.msg(result.msg, {icon: 2});
+                }
+            }});
+        }
+
+        form.on('submit(case-opinion-submit)', function (data) {
+            $('#case-req-no').val('REQ-' + Date.now() + '-' + Math.floor(Math.random() * 100000));
+            postAction(MODULE_PATH + 'opinion', data.field);
+            return false;
+        });
+
+        $('#case-advance-btn').on('click', function () {
+            let reqNo = 'REQ-' + Date.now() + '-' + Math.floor(Math.random() * 100000);
+            postAction(MODULE_PATH + 'advance', {caseId: caseId, reqNo: reqNo});
+        });
+
+        $('#case-return-btn').on('click', function () {
+            layer.prompt({title: '后退一步—交代（可空）', formType: 2}, function (note) {
+                let reqNo = 'REQ-' + Date.now() + '-' + Math.floor(Math.random() * 100000);
+                postAction(MODULE_PATH + 'returnStep', {caseId: caseId, note: note, reqNo: reqNo});
+            });
+        });
+
+        loadDetail();
+    });
+</script>
+</body>
+</html>
